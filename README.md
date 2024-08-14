@@ -1,4 +1,4 @@
-# AI Chatbot
+# MatchAI
 
 This application is developed using React and Node.js, integrating OpenAI and Pinecone to deliver advanced natural language processing capabilities. It helps clients efficiently match with their ideal clients.
 
