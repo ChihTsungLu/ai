@@ -9,7 +9,9 @@ import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import { Pinecone } from '@pinecone-database/pinecone';
 import XLSX from 'xlsx';
-
+import archiver from 'archiver';
+import { Readable } from 'stream';
+import fs from 'fs';
 
 const app = express();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -20,92 +22,154 @@ const pinecone = new Pinecone({
 app.use(cors());
 const upload = multer({ dest: 'uploads/' });
 //RAG
-// app.post("/rag", upload.single('file'), async (req, res) => {
-//     if (!req.file) {
-//         return res.status(400).send('No file uploaded.');
-//     }
-//     try {
-//         const workbook = XLSX.readFile(req.file.path);
-//         const sheetName = workbook.SheetNames[0];
-//         const worksheet = workbook.Sheets[sheetName];
-//         const data = XLSX.utils.sheet_to_json(worksheet);
+let total_tokens = 0;
+app.post("/rag", upload.single('file'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).send('No file uploaded.');
+    }
+    try {
+        const workbook = XLSX.readFile(req.file.path);
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const data = XLSX.utils.sheet_to_json(worksheet)
 
-//         const index = pinecone.Index('matchai');
-//         console.log("data: ", data)
-//         // Generate and store embeddings
-//         for (const client of data) {
-//             const fullProfile = `${client.company} ${client.title} ${client.expertise} ${client.i_refer} ${client.i_have}`;
-//             const profileEmbedding = await getEmbedding(fullProfile);
-//             const wantEmbedding = await getEmbedding(client.i_want);
+        const index = pinecone.Index('matchai');
+        // Generate and store embeddings
+        const batchSize = 100;
+        for (let i = 0; i < data.length; i += batchSize) {
+            const batch = data.slice(i, i + batchSize);
+            const upsertRequests = await Promise.all(batch.map(async (client) => {
+                const fullProfile = `${client.company} ${client.title} ${client.expertise} ${client.i_refer} ${client.i_have}`;
+                const [profileEmbedding, wantEmbedding] = await Promise.all([
+                    getEmbedding(fullProfile),
+                    getEmbedding(client.i_want)
+                ]);
+                return [
+                    { id: `${client.member_no}_profile`, values: profileEmbedding },
+                    { id: `${client.member_no}_want`, values: wantEmbedding }
+                ];
+            }));
+            console.log("upsertRequests: ", upsertRequests)
+            await index.upsert(upsertRequests.flat());
+        }
 
-//             await index.upsert([
-//                 { id: `${client.member_no}_profile`, values: profileEmbedding },
-//                 { id: `${client.member_no}_want`, values: wantEmbedding }
-//             ]);
-//         }
+        // Find matches and generate descriptions
+        const allMatches = [];
 
-//         // Find matches and generate descriptions
-//         const matches = [];
-//         for (const client of data) {
-//             const wantEmbedding = await getEmbedding(client.i_want);
-//             const queryResponse = await index.query({
-//                 vector: wantEmbedding,
-//                 topK: 10,  // Increased to ensure we get enough profile matches
-//                 filter: { id: { $regex: '_profile' } }  // Only query for profile embeddings
-//             });
+        for (const client of data) {
+            const wantEmbedding = await getEmbedding(client.i_want);
+            const queryResponse = await index.query({
+                vector: wantEmbedding,
+                topK: 10,
+                filter: { id: { $ne: `${client.member_no}_want` } }
+            });
 
-//             const clientMatches = await Promise.all(queryResponse.matches
-//                 .filter(match => parseInt(match.id.split('_')[0]) !== client.member_no)
-//                 .map(async (match) => {
-//                     const matchedClientId = parseInt(match.id.split('_')[0]);
-//                     const matchedClient = data.find(c => c.member_no === matchedClientId);
+            const clientMatches = await Promise.all(queryResponse.matches
+                .filter(match => {
+                    const matchId = match.id.split('_')[0];
+                    return matchId !== client.member_no.toString() && match.id.endsWith('_profile');
+                })
+                .slice(0, 3)
+                .map(async (match, index) => {
+                    try {
+                        const matchedClientId = parseInt(match.id.split('_')[0]);
+                        const matchedClient = data.find(c => c.member_no === matchedClientId);
 
-//                     const descriptions = await generateDescriptions(client, matchedClient);
+                        if (!matchedClient) {
+                            console.warn(`Matched client with ID ${matchedClientId} not found in data`);
+                            return null; // We'll filter out these null values later
+                        }
 
-//                     return {
-//                         "Match ID": `remo${matches.length + 1}`,
-//                         "Member ID": client.member_no,
-//                         "Match Member ID": matchedClientId,
-//                         "Company": matchedClient.company,
-//                         "Title": matchedClient.title,
-//                         "Relevance": descriptions.relevance,
-//                         "Why": descriptions.why
-//                     };
-//                 }));
-//             console.log("clientMatches: ", clientMatches)
-//             matches.push(...clientMatches);
+                        const descriptions = await generateDescriptions(client, matchedClient);
 
-//             // Add overall summary
-//             // const overallSummary = await generateOverallSummary(client, clientMatches);
-//             // matches.push({
-//             //     "Overall Summary": overallSummary
-//             // });
-//         }
+                        return {
+                            "Match ID": (allMatches.length + index + 1).toString(),
+                            "Member ID": client.member_no.toString(),
+                            "Match Member ID": matchedClientId.toString(),
+                            "Company": matchedClient.company || "N/A",
+                            "Title": matchedClient.title || "N/A",
+                            "Relevance": descriptions.relevance,
+                            "Why it's good fit": descriptions.why
+                        };
+                    } catch (error) {
+                        console.error(`Error processing match for client ${client.member_no}:`, error);
+                        return null; // We'll filter out these null values later
+                    }
+                }));
 
-//         // Create Excel file from matches
-//         const newWorkbook = XLSX.utils.book_new();
-//         const newWorksheet = XLSX.utils.json_to_sheet(matches, {
-//             header: ["Match ID", "Member ID", "Match Member ID", "Company", "Title", "Relevance", "Why", "Overall Summary"],
-//             skipHeader: false
-//         });
+            // Filter out null values (failed matches)
+            const validClientMatches = clientMatches.filter(match => match !== null);
 
-//         XLSX.utils.book_append_sheet(newWorkbook, newWorksheet, 'Matches');
+            console.log("client: ", client);
+            console.log("clientMatches: ", validClientMatches);
 
-//         const filename = `matches_${Date.now()}.xlsx`;
-//         XLSX.writeFile(newWorkbook, filename);
+            // Only generate summary and add to allMatches if there are valid matches
+            if (validClientMatches.length > 0) {
+                // Generate overall summary for this client's matches
+                const overallSummary = await generateOverallSummary(client, validClientMatches);
 
-//         res.download(filename, (err) => {
-//             if (err) {
-//                 console.error('Error sending file:', err);
-//                 res.status(500).send('Error sending file');
-//             }
-//         });
+                // Add client's matches and their overall summary to allMatches
+                allMatches.push(...validClientMatches);
+                allMatches.push({
+                    "Overall Summary": overallSummary
+                });
+            } else {
+                console.warn(`No valid matches found for client ${client.member_no}`);
+            }
 
-//     } catch (error) {
-//         console.error('Error processing file:', error);
-//         res.status(500).send('Error processing file');
-//     }
-// });
+        }
+        console.log("allMatches: ", allMatches)
+        const jsonOutput = JSON.stringify(allMatches, null, 2);
+        console.log("jsonOutput: ", jsonOutput)
+
+        // Create Excel file from allMatches
+        const newWorkbook = XLSX.utils.book_new();
+        const newWorksheet = XLSX.utils.json_to_sheet(allMatches);
+
+        XLSX.utils.book_append_sheet(newWorkbook, newWorksheet, 'Matches');
+
+        const filename = `matches_${Date.now()}.xlsx`;
+        XLSX.writeFile(newWorkbook, filename);
+        const excelBuffer = XLSX.write(newWorkbook, { type: 'buffer', bookType: 'xlsx' });
+
+        // Set headers for file download
+        // Create text file
+        const textContent = `Total token consumption: ${total_tokens}`;
+        const textBuffer = Buffer.from(textContent);
+
+        // Create a zip file
+        const archive = archiver('zip', {
+            zlib: { level: 9 } // Sets the compression level.
+        });
+
+        // Set the headers for zip file download
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename="matches_and_tokens_${Date.now()}.zip"`);
+
+        fs.writeFile("total_token_consumption", textContent, (err) => {
+            if (err) {
+                console.error('Error writing file:', err);
+            } else {
+                console.log('File has been successfully written.');
+            }
+        });
+        // Pipe archive data to the response
+        archive.pipe(res);
+
+        // Append files to the zip
+        archive.append(excelBuffer, { name: 'matches.xlsx' });
+        archive.append(textBuffer, { name: 'total_token_consumption.txt' });
+
+        // Finalize the archive and send the response
+        await archive.finalize();
+        // Send both JSON and Excel file as response
+
+
+    } catch (error) {
+        console.error('Error processing file:', error);
+        res.status(500).send('Error processing file');
+    }
+});
 
 async function getEmbedding(text) {
     const response = await openai.embeddings.create({
@@ -116,6 +180,12 @@ async function getEmbedding(text) {
 }
 
 async function generateDescriptions(client, matchedClient) {
+    const Match = z.object({
+        "Relevance": z.string(),
+        "Why it's a good fit": z.string()
+    });
+
+
     const prompt = `
     Original Client:
     Company: ${client.company}
@@ -134,19 +204,41 @@ async function generateDescriptions(client, matchedClient) {
     I Want: ${matchedClient.i_want}
 
     Based on the information provided for both the Original Client and the Matched Client, please provide:
-    1. A detailed relevance description (minimum 300 words) explaining why these clients are a good match. Focus on how their expertise, needs, and offerings complement each other.
-    2. A thorough explanation (minimum 300 words) of why this match is beneficial for both parties. Highlight specific ways they could collaborate or help each other's businesses.
+    1. A detailed relevance description (minimum 50 words) explaining why these clients are a good match. Focus on how their expertise, needs, and offerings complement each other.
+    2. A thorough explanation (minimum 50 words) of why this match is beneficial for both parties. Highlight specific ways they could collaborate or help each other's businesses.
 
+    Example Output:
+    {
+        "Relevance": "Ray has extensive resources and connections with interior designers across Taiwan, specializing in both residential and commercial spaces. His network includes professionals experienced in designing hotels, offices, and clinics, which matches Gask's requirements.",
+        "Why it's a good fit": "Ray's vast network of interior designers and expertise in commercial space design can provide Gask with the necessary resources to find the perfect designers for their projects. This partnership ensures that Gask can deliver high-quality, customized design solutions for various commercial spaces."
+    }
     Format the response as a JSON object with keys "relevance" and "why".
     `;
 
     const completion = await openai.chat.completions.create({
-        model: "gpt-4",
-        messages: [{ role: "user", content: prompt }],
+        model: "gpt-4o-mini",
+        messages: [
+            {
+                "role": "user", "content": prompt
+            }
+        ],
+        response_format: zodResponseFormat(Match, "match_reasoning"),
         temperature: 0.7,
+        max_tokens: 16384
     });
 
-    return JSON.parse(completion.choices[0].message.content);
+
+    const result = JSON.parse(completion.choices[0].message.content);
+    console.log("result: ", result)
+    console.log("completion: ", completion.choices[0].message.content)
+    total_tokens = total_tokens + completion.usage.total_tokens
+    // Validate the result against the Zod schema
+    const validatedResult = Match.parse(result);
+    console.log("validatedResult: ", validatedResult)
+    return {
+        relevance: validatedResult.Relevance,
+        why: validatedResult["Why it's a good fit"]
+    };
 }
 
 async function generateOverallSummary(client, matches) {
@@ -162,204 +254,28 @@ async function generateOverallSummary(client, matches) {
     Matches:
     ${JSON.stringify(matches, null, 2)}
 
-    Please provide a detailed overall summary (minimum 200 words) explaining why these matches are suitable for the client, considering all aspects. Address how these matches collectively meet the client's needs and complement their expertise. Highlight any patterns or themes among the matches that make them particularly valuable for the client.
+    Please provide a detailed overall summary (minimum 100 words) explaining why these matches are suitable for the client, considering all aspects. Address how these matches collectively meet the client's needs and complement their expertise. Highlight any patterns or themes among the matches that make them particularly valuable for the client.
 
     Format the response as a simple string.
+    Example Output:
+    "These matches are selected based on their potential alignment with Gask's need for expertise in commercial space design, particularly in integrating customer insights, sustainability, and technological advancements into their projects."
+    
     `;
 
-    const completion = await openai.chat.completions.create({
-        model: "gpt-4",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.7,
-    });
-
-    return completion.choices[0].message.content.trim();
-}
-
-
-
-function flattenJson(data) {
-    // No need to flatten, as the data should already be in the correct format
-    return data.map(item => ({
-        "Match ID": item["Match ID"],
-        "Member ID": item["Member ID"],
-        "Match Member ID": item["Match Member ID"],
-        "Company": item["Company"],
-        "Title": item["Title"],
-        "Relevance": item["Relevance"],
-        "Why": item["Why"]
-    }));
-}
-
-app.post("/ai", upload.single('file'), async (req, res) => {
-    if (!req.file) {
-        return res.status(400).send('No file uploaded.');
-    }
-    try {
-        const workbook = XLSX.readFile(req.file.path);
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        const data = XLSX.utils.sheet_to_json(worksheet);
-
-        // Define chunk size and create chunks
-        const chunkSize = 50;
-        const chunks = chunkArray(data, chunkSize);
-        // Process all chunks
-        const allResults = await processAllChunks(chunks);
-
-        // Flatten and process the results
-        const flattenedData = flattenResults(allResults);
-
-        // Create a new workbook and worksheet
-        const newWorkbook = XLSX.utils.book_new();
-        const newWorksheet = XLSX.utils.json_to_sheet(flattenedData, {
-            header: ["Match ID", "Member ID", "Match Member ID", "Company", "Title", "Relevance", "Why", "Overall Summary"],
-            skipHeader: false
-        });
-
-        // Add the worksheet to the workbook
-        XLSX.utils.book_append_sheet(newWorkbook, newWorksheet, 'Matches');
-
-        // Generate a unique filename
-        const filename = `matches_${Date.now()}.xlsx`;
-
-        // Write the workbook to a file
-        XLSX.writeFile(newWorkbook, filename);
-
-        // Send the file as a response
-        res.download(filename, (err) => {
-            if (err) {
-                console.error('Error sending file:', err);
-                res.status(500).send('Error sending file');
-            }
-        });
-
-    } catch (error) {
-        console.error('Error processing file:', error);
-        res.status(500).send('Error processing file');
-    }
-});
-
-function chunkArray(array, chunkSize) {
-    const chunks = [];
-    for (let i = 0; i < array.length; i += chunkSize) {
-        chunks.push(array.slice(i, i + chunkSize));
-    }
-    return chunks;
-}
-
-async function processAllChunks(chunks) {
-    const results = [];
-    for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        const chunkPrompt = generatePromptForChunk(chunk, i, chunks.length);
-        const chunkResult = await makeAPICall(chunkPrompt);
-        results.push(chunkResult);
-    }
-    return results;
-}
-
-function generatePromptForChunk(chunk, chunkIndex, totalChunks) {
-    const chunkData = JSON.stringify(chunk);
-    return `
-        This is chunk ${chunkIndex + 1} of ${totalChunks} total chunks.
-        Analyze the provided data and generate 3 ideal client matches for each member in this chunk. 
-        Follow these guidelines strictly:
-
-        1. Matches: Create 3 unique matches per member.
-
-        2. Match Structure:
-        - Assign a unique Match ID (e.g., remo1, remo2) to each match.
-        - Ensure the Member ID corresponds to the original member being matched.
-
-        3. Match Description:
-        - Provide a detailed description of each match, minimum 200 words.
-        - Include relevant background, skills, experiences, and qualities that make this a good match.
-
-        4. Relevance:
-        - Explain thoroughly why this match is relevant to the member.
-        - Highlight specific points of compatibility or complementarity.
-
-        5. Overall Summary:
-        - After listing the matches for a member, provide an elaborated overall summary (minimum 200 words).
-        - This summary should explain why these matches are suitable for the member, considering all aspects.
-
-        6. Language and Detail:
-        - Use English for all information.
-        - Be specific, detailed, and contextual in all descriptions and explanations.
-
-        7. Consistency:
-        - Ensure every member in the chunk receives equal attention and detail in their matches and summaries.
-
-        8. Format:
-        - Present the information in a clear, structured format for easy reading and parsing.
-
-        Data for this chunk: 
-        ${chunkData}
-    `;
-}
-
-async function makeAPICall(prompt) {
-
-    const Match = z.object({
-        "Match ID": z.string(),
-        "Member ID": z.number(),
-        "Match Member ID": z.number(),
-        "Company": z.string(),
-        "Title": z.string(),
-        "Relevance": z.string(),
-        "Why": z.string()
-    });
-
-    const OverallSummary = z.object({
-        "Overall Summary": z.string()
-    });
-
-    const MatchOrSummary = z.union([Match, OverallSummary]);
-
-    const MatchObject = z.object({
-        matches: z.array(MatchOrSummary)
-    });
-
-
-    const completion = await openai.chat.completions.create({
+    const response = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
             {
                 "role": "user", "content": prompt
             }
         ],
-        response_format: zodResponseFormat(MatchObject, "match_reasoning"),
-        temperature: 0.7,
-        max_tokens: 16384,
+        temperature: 0.7
     });
-    return JSON.parse(completion.choices[0].message.content);
+    total_tokens = total_tokens + response.usage.total_tokens
+    return response.choices[0].message.content
 }
 
-function flattenResults(results) {
-    return results.flatMap(result => 
-        result.matches.flatMap((item) => {
-            const matchDetails = {
-                "Match ID": item["Match ID"],
-                "Member ID": item["Member ID"],
-                "Match Member ID": item["Match Member ID"],
-                "Company": item["Company"],
-                "Title": item["Title"],
-                "Relevance": item["Relevance"],
-                "Why": item["Why"],
-            };
 
-            if (item["Overall Summary"]) {
-                return [
-                    matchDetails,
-                    { "Overall Summary": item["Overall Summary"] }
-                ];
-            }
-
-            return [matchDetails];
-        })
-    );
-}
 
 
 app.listen(3001, () => console.log('Example app listening on port 3001!'));
