@@ -129,7 +129,7 @@ app.post("/rag", upload.single('file'), async (req, res) => {
         XLSX.utils.book_append_sheet(newWorkbook, newWorksheet, 'Matches');
 
         const filename = `matches_${Date.now()}.xlsx`;
-        XLSX.writeFile(newWorkbook, filename);
+        // XLSX.writeFile(newWorkbook, filename);
         const excelBuffer = XLSX.write(newWorkbook, { type: 'buffer', bookType: 'xlsx' });
 
         // Set headers for file download
@@ -146,13 +146,13 @@ app.post("/rag", upload.single('file'), async (req, res) => {
         res.setHeader('Content-Type', 'application/zip');
         res.setHeader('Content-Disposition', `attachment; filename="matches_and_tokens_${Date.now()}.zip"`);
 
-        fs.writeFile("total_token_consumption", textContent, (err) => {
-            if (err) {
-                console.error('Error writing file:', err);
-            } else {
-                console.log('File has been successfully written.');
-            }
-        });
+        // fs.writeFile("total_token_consumption", textContent, (err) => {
+        //     if (err) {
+        //         console.error('Error writing file:', err);
+        //     } else {
+        //         console.log('File has been successfully written.');
+        //     }
+        // });
         // Pipe archive data to the response
         archive.pipe(res);
 
