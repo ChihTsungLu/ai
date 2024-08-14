@@ -75,13 +75,19 @@ const ExcelUploader = () => {
     }
   };
   return (
-    <div>
-      <h1>上傳 Excel File</h1>
-      <input type="file" accept=".xlsx, .xls" onChange={handleFileChange} />
-      <button onClick={handleFileUpload}>Upload</button>
-      {error && <p style={{ color: 'red' }}>{error}</p>}
-      {success && <p style={{ color: 'green' }}>{success}</p>}
-      {loading && <p>正在處理中，請稍後...資料量大會花十分鐘左右</p>}
+    <div className="flex  justify-center items-center p-20">
+      <div className="flex flex-col border rounded-md p-3 w-fit mr-10">
+        <h1>上傳 Excel File</h1>
+
+        <input type="file" accept=".xlsx, .xls" onChange={handleFileChange} />
+      </div>
+      <div>
+
+        <button onClick={handleFileUpload} className="bg-green-300 p-3 rounded-md ">Upload</button>
+        {error && <p style={{ color: 'red' }}>{error}</p>}
+        {success && <p style={{ color: 'green' }}>{success}</p>}
+        {true && <p>處理中請稍後，資料量大會花十分鐘左右</p>}
+      </div>
     </div>
   );
 };
