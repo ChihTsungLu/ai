@@ -86,7 +86,7 @@ const ExcelUploader = () => {
         <button onClick={handleFileUpload} className="bg-green-300 p-3 rounded-md ">Upload</button>
         {error && <p style={{ color: 'red' }}>{error}</p>}
         {success && <p style={{ color: 'green' }}>{success}</p>}
-        {true && <p>處理中請稍後，資料量大會花十分鐘左右</p>}
+        {loading && <p>處理中請稍後，資料量大會花十分鐘左右</p>}
       </div>
     </div>
   );
