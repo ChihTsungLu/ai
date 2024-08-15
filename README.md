@@ -1,10 +1,18 @@
 # MatchAI
 
-This application is developed using React and Node.js, integrating OpenAI and Pinecone to deliver advanced natural language processing capabilities. It helps clients efficiently match with their ideal clients.
+MatchAI is an advanced application that helps clients efficiently match with their ideal customers. It leverages the power of React, Node.js, OpenAI, and Pinecone to deliver sophisticated natural language processing capabilities.
+
+### Features
+
+1. Client matching using AI-powered algorithms
+2. Integration with OpenAI for natural language processing
+3. Efficient data storage and retrieval using Pinecone vector database
 
 ### Prerequisites
 
-Make sure you have Node.js and npm installed on your machine.
+1. An OpenAI API key
+2. A Pinecone API key
+3. NodeJS installed
 
 ### Installation
 
@@ -16,32 +24,46 @@ Make sure you have Node.js and npm installed on your machine.
    ```
 2. Install dependencies
    ```
+   cd frontend
+   npm install
+   cd ../backend
    npm install
    ```
+
+### Configuration
+
+1. Create a .env file in the backend directory and add the following environment variables:
+
+   ```
+   OPENAI_API_KEY=YOUR_OPENAI_API_KEY
+   PINECONE_API_KEY=YOUR_PINECONE_API_KEY
+   ```
+2. Set up Pinecone:
+
+Create an index named matchai in your Pinecone account.
+If you want to use a different index name, update the following line in your backend code:
+   ```
+   const index = pinecone.Index('YOUR_INDEX_NAME');
+   ```
+
 ### Running the Development Server
+
+1. Start the backend server:
    ```
-   backend: npm start
-   frontend: npm run start
+   cd backend
+   npm start
    ```
 
-### OpenAI API Key
-The OpenAI API Key is stored in the .env file. Ensure you have your API key set up as follows:
+2. In a new terminal, start the frontend development server:
    ```
-       #.env
-       OPENAI_API_KEY=YOUR_OPENAI_API_KEY
+   cd frontend
+   npm start
    ```
-    
-Replace YOUR_OPENAI_API_KEY with your actual OpenAI API key.
-
-### PINECONE API Key
-The PINECONE API Key is stored in the .env file. Ensure you have your API key set up as follows:
-   ```
-       #.env
-       PINECONE_API_KEY=YOUR_BRIGHT_DATA_KEY
-   ```
-    
-Replace YOUR_OPENAI_API_KEY with your actual OpenAI API key.
+3. Open your browser and navigate to http://localhost:3000 to access the application.
 
 ### Technologies Used
 
-React, NodeJS, OpenAI, PINECONE;
+1. Frontend: React
+2. Backend: Node.js, Express
+3. AI Integration: OpenAI API
+4. Vector Database: Pinecone
