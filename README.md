@@ -20,7 +20,7 @@ MatchAI is an advanced application that helps clients efficiently match with the
    ```
    git clone https://github.com/ChihTsungLu/ai.git
    cd frontend
-   cd backedn
+   cd backend
    ```
 2. Install dependencies
    ```
