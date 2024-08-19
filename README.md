@@ -40,7 +40,7 @@ MatchAI is an advanced application that helps clients efficiently match with the
    ```
 2. Set up Pinecone:
 
-Create an index named matchai in your Pinecone account.
+Create an index named matchai in your Pinecone account, and the dimension is 1536, since this project is using `text-embedding-3-small` from OpenAI
 If you want to use a different index name, update the following line in your backend code:
    ```
    const index = pinecone.Index('YOUR_INDEX_NAME');
